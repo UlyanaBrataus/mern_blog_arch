@@ -1,14 +1,16 @@
 import express from "express";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 import mongoose from "mongoose";
-import { validationResult } from "express-validator";
 
+import { validationResult } from "express-validator";
 import { registerValidation } from "./validations/auth.js";
+import UserModel from "./models/User.js";
 
 mongoose
   .connect(
-    "mongodb+srv://admin:12345@cluster0.zcfcl.mongodb.net/?retryWrites=true&w=majority"
-  )
+    "mongodb+srv://admin:12345@cluster0.zcfcl.mongodb.net/blog?retryWrites=true&w=majority"
+  ) // "blog" we add manually, it means that we connect not just to mongoDB server, but to our database
   .then(() => console.log("DB OK"))
   .catch(err => console.log("DB error", err));
 
@@ -21,16 +23,104 @@ const app = express(); // creates express application, full logic of express is 
 
 app.use(express.json()); // to let express understand json format
 
-app.post("/auth/register", registerValidation, (req, res) => {
-  const errors = validationResult(req); // takes data from request
-  if (!errors.isEmpty()) {
-    // if there is an error
-    return res.status(400).json(errors.array());
+/* ------------ AUTHORISATION ------------- */
+app.post("/auth/login", async (req, res) => {
+  try {
+    // making auth we should check does user exist in Data Base or not
+    const user = await UserModel.findOne({ email: req.body.email });
+    if (!user) {
+      // if there is no such user in DB
+      return res.status(404).json({
+        message: "Пользователь не найден", // in real app we should not give much info about data that is wrong (login or password) for better security
+      });
+    }
+
+    const isValidPass = await bcrypt.compare(
+      req.body.password,
+      user._doc.passwordHash
+    ); // check whether password is correct or not
+    if (!isValidPass) {
+      return res.status(400).json({
+        message: "Неверный логин или пароль",
+      });
+    }
+
+    const token = jwt.sign(
+      // if user logs in correctly we create new token
+      {
+        _id: user._id,
+      },
+      "secret123",
+      {
+        expiresIn: "30d", // how long the token will be valid
+      }
+    );
+
+    const { passwordHash, ...userData } = user._doc;
+
+    res.json({
+      ...userData, //  to get not all of the user methods, but only values from UserModel without passwordHash
+      token,
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({
+      message: "Не удалось авторизоваться",
+    });
   }
-  res.json({
-    success: true, // if there are no errors
-  });
+});
+
+/* ------------ REGISTRATION ------------- */
+app.post("/auth/register", registerValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req); // takes data from request
+    if (!errors.isEmpty()) {
+      // if there is an error
+      return res.status(400).json(errors.array());
+    }
+
+    const password = req.body.password;
+    const salt = await bcrypt.genSalt(10); // generates algo of salt
+    const hash = await bcrypt.hash(password, salt); // encrypting pssword with salt
+
+    const doc = new UserModel({
+      email: req.body.email,
+      fullName: req.body.fullName,
+      avatarUrl: req.body.avatarUrl,
+      passwordHash: hash,
+    }); // takes everything from request body
+
+    const user = await doc.save(); // save user in MongoDB
+
+    const token = jwt.sign(
+      {
+        _id: user._id,
+      },
+      "secret123",
+      {
+        expiresIn: "30d", // how long the token will be valid
+      }
+    ); // after user registered successfully and password was hashed we create jwt token
+
+    const { passwordHash, ...userData } = user._doc;
+
+    res.json({
+      ...userData, //  to get not all of the user methods, but only values from UserModel without passwordHash
+      token,
+    }); // must be only one response!!!
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({
+      message: "Не удалось зарегистрироваться",
+    });
+  }
 }); // when we get auth request validates it, if validation is passed (if email is email, password has min length, etc.) collback function will work and it checks user register data
+
+app.get("/auth/me", (req, res) => {
+  try {
+    // decrypt user token to check user info and check his rights
+  } catch (err) {}
+});
 
 // app.get("/", (req, res) => {
 //   res.send("Hello World!");
